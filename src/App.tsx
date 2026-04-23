@@ -11,9 +11,12 @@ const INDICES = [
   { value: 'R_75', label: 'Volatility 75 Index' },
   { value: 'R_100', label: 'Volatility 100 Index' },
   { value: '1HZ10V', label: 'Volatility 10 (1s) Index' },
+  { value: '1HZ15V', label: 'Volatility 15 (1s) Index' },
   { value: '1HZ25V', label: 'Volatility 25 (1s) Index' },
+  { value: '1HZ30V', label: 'Volatility 30 (1s) Index' },
   { value: '1HZ50V', label: 'Volatility 50 (1s) Index' },
   { value: '1HZ75V', label: 'Volatility 75 (1s) Index' },
+  { value: '1HZ90V', label: 'Volatility 90 (1s) Index' },
   { value: '1HZ100V', label: 'Volatility 100 (1s) Index' },
   { value: 'R_BEAR', label: 'Bear Market Index' },
   { value: 'R_BULL', label: 'Bull Market Index' },
@@ -29,6 +32,7 @@ export default function App() {
   const [isTrading, setIsTrading] = useState(false);
   const [isTradeOpen, setIsTradeOpen] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  const [currentTick, setCurrentTick] = useState<string | null>(null);
   
   const [initialStake, setInitialStake] = useState<string>('1');
   const [currentStake, setCurrentStake] = useState<number>(1);
@@ -90,78 +94,77 @@ export default function App() {
     deriv.onBalanceChange = (bal) => setBalance(bal);
     
     deriv.onTick = async (tick) => {
-      const quoteStr = tick.quote.toString();
+      // 1. Process Core Logic (No UI renders yet for max speed)
+      const pipSize = tick.pip_size;
+      const quoteStr = pipSize !== undefined ? Number(tick.quote).toFixed(pipSize) : tick.quote.toString();
       const lastDigit = parseInt(quoteStr.slice(-1));
 
-      // Update digit history
+      // Update in-memory history instantly
       digitHistoryRef.current.push(lastDigit);
       if (digitHistoryRef.current.length > 2) {
         digitHistoryRef.current.shift();
       }
 
       const state = stateRef.current;
-      // Process only tick data when unlocked
-      if (!state.isTrading || state.isTradeOpen) return;
-
-      // Decide trade type
+      let shouldTrade = false;
       let tradeType = '';
       let barrier: number | undefined = undefined;
 
-      if (state.contractType === 'EVEN_ODD') {
-        const history = digitHistoryRef.current;
-        if (history.length < 2) return; // Wait for enough data
+      // Evaluate logic instantly if unlocked
+      if (state.isTrading && !state.isTradeOpen) {
+        if (state.contractType === 'EVEN_ODD') {
+          const history = digitHistoryRef.current;
+          if (history.length >= 2) {
+            const isPrevEven = history[0] % 2 === 0;
+            const isCurrEven = history[1] % 2 === 0;
 
-        const isPrevEven = history[0] % 2 === 0;
-        const isCurrEven = history[1] % 2 === 0;
-
-        if (state.tradeMode === 'BOTH') {
-          if (isPrevEven && isCurrEven) {
-            tradeType = 'DIGITODD';
-          } else if (!isPrevEven && !isCurrEven) {
-            tradeType = 'DIGITEVEN';
-          } else {
-            return; // Pattern not met, wait for next tick
+            if (state.tradeMode === 'BOTH') {
+              if (isPrevEven && isCurrEven) {
+                tradeType = 'DIGITODD';
+                shouldTrade = true;
+              } else if (!isPrevEven && !isCurrEven) {
+                tradeType = 'DIGITEVEN';
+                shouldTrade = true;
+              }
+            } else if (state.tradeMode === 'TYPE1') {
+              if (!isPrevEven && !isCurrEven) {
+                tradeType = 'DIGITEVEN';
+                shouldTrade = true;
+              }
+            } else {
+              if (isPrevEven && isCurrEven) {
+                tradeType = 'DIGITODD';
+                shouldTrade = true;
+              }
+            }
           }
-        } else if (state.tradeMode === 'TYPE1') {
-          // Reversal strategy: Buy Even after 2 consecutive Odds
-          if (!isPrevEven && !isCurrEven) {
-            tradeType = 'DIGITEVEN';
+        } else if (state.contractType === 'OVER_UNDER') {
+          barrier = state.prediction;
+          shouldTrade = true;
+          if (state.tradeMode === 'BOTH') {
+            tradeType = lastDigit > state.prediction ? 'DIGITOVER' : 'DIGITUNDER';
+          } else if (state.tradeMode === 'TYPE1') {
+            tradeType = 'DIGITOVER';
           } else {
-            return;
+            tradeType = 'DIGITUNDER';
           }
-        } else {
-          // Reversal strategy: Buy Odd after 2 consecutive Evens
-          if (isPrevEven && isCurrEven) {
-            tradeType = 'DIGITODD';
+        } else if (state.contractType === 'RISE_FALL') {
+          shouldTrade = true;
+          if (state.tradeMode === 'BOTH') {
+            tradeType = lastDigit > 4 ? 'CALL' : 'PUT';
+          } else if (state.tradeMode === 'TYPE1') {
+            tradeType = 'CALL';
           } else {
-            return;
+            tradeType = 'PUT';
           }
-        }
-      } else if (state.contractType === 'OVER_UNDER') {
-        barrier = state.prediction;
-        if (state.tradeMode === 'BOTH') {
-          tradeType = lastDigit > state.prediction ? 'DIGITOVER' : 'DIGITUNDER';
-        } else if (state.tradeMode === 'TYPE1') {
-          tradeType = 'DIGITOVER';
-        } else {
-          tradeType = 'DIGITUNDER';
-        }
-      } else if (state.contractType === 'RISE_FALL') {
-        if (state.tradeMode === 'BOTH') {
-          tradeType = lastDigit > 4 ? 'CALL' : 'PUT';
-        } else if (state.tradeMode === 'TYPE1') {
-          tradeType = 'CALL';
-        } else {
-          tradeType = 'PUT';
         }
       }
 
-      // Lock trading immediately
-      setIsTradeOpen(true);
-      stateRef.current.isTradeOpen = true;
-
-      try {
-        // Execute BUY
+      // Fire WebSocket Request IMMEDIATELY before React State Updates
+      let buyPromise: Promise<any> | null = null;
+      if (shouldTrade) {
+        stateRef.current.isTradeOpen = true; // Lock memory state instantly
+        
         const params: any = {
           amount: state.currentStake,
           basis: 'stake',
@@ -176,17 +179,28 @@ export default function App() {
           params.barrier = barrier.toString();
         }
 
-        const res = await deriv.buy(params, state.currentStake);
+        // ws.send is synchronous inside this promise, zero event loop delay
+        buyPromise = deriv.buy(params, state.currentStake);
+      }
 
-        if (res.error) throw new Error(res.error.message);
-        
-        // Subscribe to contract to wait for settlement
-        await deriv.subscribeContract(res.buy.contract_id);
-      } catch (err: any) {
-        setTradeError(err.message);
-        // Unlock on error to allow retry
-        setIsTradeOpen(false);
-        stateRef.current.isTradeOpen = false;
+      // 2. Schedule React UI Updates
+      setCurrentTick(quoteStr);
+      if (shouldTrade) {
+        setIsTradeOpen(true);
+      }
+
+      // 3. Await trade network response non-blockingly
+      if (buyPromise) {
+        try {
+          const res = await buyPromise;
+          if (res.error) throw new Error(res.error.message);
+          
+          await deriv.subscribeContract(res.buy.contract_id);
+        } catch (err: any) {
+          setTradeError(err.message);
+          setIsTradeOpen(false);
+          stateRef.current.isTradeOpen = false;
+        }
       }
     };
 
@@ -215,12 +229,10 @@ export default function App() {
           setIsTrading(false);
           stateRef.current.isTrading = false;
           setAlertMsg({ type: 'success', text: `Take Profit reached! Total Profit: $${newTotalProfit.toFixed(2)}` });
-          deriv.forgetAll('ticks').catch(()=>{});
         } else if (newTotalProfit <= -state.stopLoss) {
           setIsTrading(false);
           stateRef.current.isTrading = false;
           setAlertMsg({ type: 'error', text: `Stop Loss reached! Total Loss: $${Math.abs(newTotalProfit).toFixed(2)}` });
-          deriv.forgetAll('ticks').catch(()=>{});
         } else {
           if (profit > 0) {
             setCurrentStake(state.initialStake);
@@ -251,6 +263,22 @@ export default function App() {
       deriv.disconnect();
     };
   }, []);
+
+  // Manage tick subscription based on symbol and connection
+  useEffect(() => {
+    if (connected && symbol) {
+      const subscribe = async () => {
+        try {
+          await deriv.forgetAll('ticks');
+          await deriv.subscribeTicks(symbol);
+          setCurrentTick(null);
+        } catch (e) {
+          console.error("Failed to subscribe to ticks:", e);
+        }
+      };
+      subscribe();
+    }
+  }, [connected, symbol]);
 
   const handleConnect = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -290,9 +318,6 @@ export default function App() {
     if (reason) {
       setAlertMsg({ type: 'info', text: reason });
     }
-    try {
-      await deriv.forgetAll('ticks');
-    } catch (e) {}
   };
 
   const handleStartTrading = async () => {
@@ -313,15 +338,6 @@ export default function App() {
     setIsTrading(true);
     stateRef.current.isTrading = true;
     stateRef.current.currentStake = numStake;
-    
-    try {
-      await deriv.forgetAll('ticks');
-      await deriv.subscribeTicks(symbol);
-    } catch (err: any) {
-      setTradeError('Failed to subscribe to ticks: ' + err.message);
-      setIsTrading(false);
-      stateRef.current.isTrading = false;
-    }
   };
 
   const toggleTheme = () => setTheme(prev => prev === 'light' ? 'dark' : 'light');
@@ -608,6 +624,20 @@ export default function App() {
                     <p className="font-medium">{tradeError}</p>
                   </div>
                 )}
+
+                <div className="mb-6 bg-blue-50 dark:bg-blue-900/20 p-6 rounded-xl border border-blue-100 dark:border-blue-800 transition-colors flex flex-col items-center justify-center text-center">
+                  <p className="text-sm font-medium text-blue-700 dark:text-blue-400 mb-2 uppercase tracking-wide">Real-Time Tick ({symbol})</p>
+                  <div className="text-4xl sm:text-5xl font-mono font-bold tracking-wider text-gray-900 dark:text-gray-100">
+                    {currentTick ? (
+                      <>
+                        {currentTick.slice(0, -1)}
+                        <span className="text-blue-600 dark:text-blue-400 bg-blue-100 dark:bg-blue-900/50 px-1.5 py-0.5 rounded ml-0.5">{currentTick.slice(-1)}</span>
+                      </>
+                    ) : (
+                      <span className="text-gray-400 text-2xl font-sans font-normal animate-pulse">Waiting for tick...</span>
+                    )}
+                  </div>
+                </div>
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="bg-gray-50 dark:bg-gray-900 p-4 rounded-xl border border-gray-100 dark:border-gray-700 transition-colors">
