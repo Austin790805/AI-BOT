@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { DerivAPI } from './lib/deriv';
-import { Activity, DollarSign, AlertCircle, LogOut, Hash, Clock, CheckCircle2, XCircle, Play, Square, RefreshCw, Moon, Sun } from 'lucide-react';
+import { Activity, DollarSign, AlertCircle, LogOut, Hash, Clock, CheckCircle2, XCircle, Play, Square, RefreshCw, Moon, Sun, BarChart2 } from 'lucide-react';
 
 const deriv = new DerivAPI();
 
@@ -51,6 +51,10 @@ export default function App() {
   const [alertMsg, setAlertMsg] = useState<{type: 'success'|'error'|'info', text: string} | null>(null);
   const [tradeError, setTradeError] = useState('');
   const digitHistoryRef = useRef<number[]>([]);
+
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analyzeProgress, setAnalyzeProgress] = useState({ current: 0, total: 0 });
+  const [analysisResults, setAnalysisResults] = useState<{label: string, result: string, percent: string}[] | null>(null);
 
   const stateRef = useRef({
     isTrading: false,
@@ -342,6 +346,104 @@ export default function App() {
 
   const toggleTheme = () => setTheme(prev => prev === 'light' ? 'dark' : 'light');
 
+  const runAnalysis = async () => {
+    if (!connected) {
+      setTradeError('Connect to Deriv first to run analysis.');
+      return;
+    }
+    setIsAnalyzing(true);
+    const validIndices = INDICES.filter(idx => idx.value !== 'R_BEAR' && idx.value !== 'R_BULL');
+    setAnalyzeProgress({ current: 0, total: validIndices.length });
+    
+    let bests = {
+      even: { label: '', val: -1 },
+      odd: { label: '', val: -1 },
+      rise: { label: '', val: -1 },
+      fall: { label: '', val: -1 },
+      over0: { label: '', val: -1 },
+      over1: { label: '', val: -1 },
+      under8: { label: '', val: -1 },
+      under9: { label: '', val: -1 },
+      highDigit: { label: '', digit: -1, val: -1 },
+      lowDigit: { label: '', digit: -1, val: 101 },
+    };
+
+    for (let i = 0; i < validIndices.length; i++) {
+      const item = validIndices[i];
+      try {
+        const res = await deriv.getTicksHistory(item.value, 1000);
+        if (res.error) {
+          console.error(`Skipping ${item.value} due to error:`, res.error);
+          continue;
+        }
+        
+        const prices = res.history?.prices as number[];
+        if (!prices || prices.length === 0) continue;
+
+        let pipSize = res.history?.pip_size;
+        if (pipSize === undefined) {
+          pipSize = Math.max(...prices.map(p => p.toString().split('.')[1]?.length || 0));
+        }
+
+        const digits = prices.map(p => parseInt(Number(p).toFixed(pipSize).slice(-1)));
+        const total = digits.length;
+
+        const evenCount = digits.filter(d => d % 2 === 0).length;
+        const oddCount = total - evenCount;
+        const riseCount = digits.filter(d => d > 4).length;
+        const fallCount = digits.filter(d => d <= 4).length;
+        const over0Count = digits.filter(d => d > 0).length;
+        const over1Count = digits.filter(d => d > 1).length;
+        const under8Count = digits.filter(d => d < 8).length;
+        const under9Count = digits.filter(d => d < 9).length;
+
+        const evenPct = (evenCount / total) * 100;
+        const oddPct = (oddCount / total) * 100;
+        const risePct = (riseCount / total) * 100;
+        const fallPct = (fallCount / total) * 100;
+        const over0Pct = (over0Count / total) * 100;
+        const over1Pct = (over1Count / total) * 100;
+        const under8Pct = (under8Count / total) * 100;
+        const under9Pct = (under9Count / total) * 100;
+
+        if (evenPct > bests.even.val) bests.even = { label: item.label, val: evenPct };
+        if (oddPct > bests.odd.val) bests.odd = { label: item.label, val: oddPct };
+        if (risePct > bests.rise.val) bests.rise = { label: item.label, val: risePct };
+        if (fallPct > bests.fall.val) bests.fall = { label: item.label, val: fallPct };
+        if (over0Pct > bests.over0.val) bests.over0 = { label: item.label, val: over0Pct };
+        if (over1Pct > bests.over1.val) bests.over1 = { label: item.label, val: over1Pct };
+        if (under8Pct > bests.under8.val) bests.under8 = { label: item.label, val: under8Pct };
+        if (under9Pct > bests.under9.val) bests.under9 = { label: item.label, val: under9Pct };
+
+        const digitCounts = new Array(10).fill(0);
+        digits.forEach(d => digitCounts[d]++);
+        
+        for (let d = 0; d < 10; d++) {
+          const pct = (digitCounts[d] / total) * 100;
+          if (pct > bests.highDigit.val) bests.highDigit = { label: item.label, digit: d, val: pct };
+          if (pct < bests.lowDigit.val) bests.lowDigit = { label: item.label, digit: d, val: pct };
+        }
+      } catch (e) {
+        console.error('Analysis error for', item.value, e);
+      }
+      setAnalyzeProgress({ current: i + 1, total: INDICES.length });
+    }
+
+    setAnalysisResults([
+      { label: 'Most Even', result: bests.even.label, percent: `${bests.even.val.toFixed(2)}%` },
+      { label: 'Most Odd', result: bests.odd.label, percent: `${bests.odd.val.toFixed(2)}%` },
+      { label: 'Most Rising (> 4)', result: bests.rise.label, percent: `${bests.rise.val.toFixed(2)}%` },
+      { label: 'Most Falling (<= 4)', result: bests.fall.label, percent: `${bests.fall.val.toFixed(2)}%` },
+      { label: 'Most Over 0', result: bests.over0.label, percent: `${bests.over0.val.toFixed(2)}%` },
+      { label: 'Most Over 1', result: bests.over1.label, percent: `${bests.over1.val.toFixed(2)}%` },
+      { label: 'Most Under 8', result: bests.under8.label, percent: `${bests.under8.val.toFixed(2)}%` },
+      { label: 'Most Under 9', result: bests.under9.label, percent: `${bests.under9.val.toFixed(2)}%` },
+      { label: 'Highest Occurring Digit', result: `${bests.highDigit.label} (Digit ${bests.highDigit.digit})`, percent: `${bests.highDigit.val.toFixed(2)}%` },
+      { label: 'Least Occurring Digit', result: `${bests.lowDigit.label} (Digit ${bests.lowDigit.digit})`, percent: `${bests.lowDigit.val.toFixed(2)}%` },
+    ]);
+    setIsAnalyzing(false);
+  };
+
   return (
     <div className={`min-h-screen font-sans transition-colors duration-200 ${theme === 'dark' ? 'dark bg-gray-900 text-gray-100' : 'bg-gray-50 text-gray-900'}`}>
       <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-6 py-4 flex items-center justify-between transition-colors duration-200">
@@ -412,7 +514,6 @@ export default function App() {
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Left Column: Parameters */}
             <div className="lg:col-span-1 space-y-6">
               <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 transition-colors duration-200">
                 <h3 className="text-lg font-semibold mb-4">Bot Parameters</h3>
@@ -566,7 +667,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Right Column: Controls & History */}
             <div className="lg:col-span-2 space-y-6">
               {/* Controls & Status */}
               <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 transition-colors duration-200">
@@ -709,6 +809,53 @@ export default function App() {
                 </div>
               </div>
             </div>
+            
+            {/* Digit Edge Analyzer */}
+            <div className="lg:col-span-3 bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 transition-colors duration-200">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+                <div>
+                  <h3 className="text-lg font-semibold flex items-center gap-2 text-gray-900 dark:text-white">
+                    <BarChart2 className="w-5 h-5 text-indigo-500" /> Digit Edge Market Analyzer
+                  </h3>
+                  <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Analyze 1000 historical ticks across all synthetics to find the highest occurrences.</p>
+                </div>
+                <button
+                  onClick={runAnalysis}
+                  disabled={isAnalyzing}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed min-w-[200px]"
+                >
+                  {isAnalyzing ? `Analyzing... ${analyzeProgress.current}/${analyzeProgress.total}` : 'Run Analysis'}
+                </button>
+              </div>
+
+              {analysisResults && (
+                <div className="overflow-x-auto border border-gray-100 dark:border-gray-700 rounded-xl">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-gray-50 dark:bg-gray-900/50 text-gray-600 dark:text-gray-400 transition-colors">
+                      <tr>
+                        <th className="px-5 py-3.5 font-semibold">Market with</th>
+                        <th className="px-5 py-3.5 font-semibold">Result (volatility index)</th>
+                        <th className="px-5 py-3.5 font-semibold text-right">Occurrence (percentage)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 dark:divide-gray-700/50">
+                      {analysisResults.map((row, i) => (
+                        <tr key={i} className="hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors group">
+                          <td className="px-5 py-3.5 font-medium text-gray-900 dark:text-gray-200">{row.label}</td>
+                          <td className="px-5 py-3.5 flex items-center gap-2">
+                            <span className="bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 px-2 py-1 rounded font-medium text-xs">
+                              {row.result}
+                            </span>
+                          </td>
+                          <td className="px-5 py-3.5 text-right font-bold text-gray-800 dark:text-gray-300">{row.percent}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
           </div>
         )}
       </main>

@@ -90,6 +90,15 @@ export class DerivAPI {
     return this.send({ ticks: symbol, subscribe: 1 });
   }
 
+  async getTicksHistory(symbol: string, count: number = 1000) {
+    return this.send({
+      ticks_history: symbol,
+      end: 'latest',
+      count: count,
+      style: 'ticks'
+    });
+  }
+
   async forgetAll(type: string) {
     return this.send({ forget_all: type });
   }
