@@ -45,6 +45,7 @@ export default function App() {
   const [tradeMode, setTradeMode] = useState<string>('BOTH');
   const [prediction, setPrediction] = useState<string>('4');
   const [ticks, setTicks] = useState<string>('1');
+  const [executionSpeed, setExecutionSpeed] = useState<'fast' | 'normal' | 'slow'>('normal');
   
   const [totalProfit, setTotalProfit] = useState<number>(0);
   const [tradeHistory, setTradeHistory] = useState<any[]>([]);
@@ -71,7 +72,8 @@ export default function App() {
     contractType: 'EVEN_ODD' as 'EVEN_ODD' | 'OVER_UNDER' | 'RISE_FALL',
     tradeMode: 'BOTH',
     prediction: 4,
-    ticks: 1
+    ticks: 1,
+    executionSpeed: 'normal' as 'fast' | 'normal' | 'slow'
   });
 
   useEffect(() => {
@@ -90,9 +92,10 @@ export default function App() {
       contractType,
       tradeMode,
       prediction: parseInt(prediction) || 4,
-      ticks: parseInt(ticks) || 1
+      ticks: parseInt(ticks) || 1,
+      executionSpeed
     };
-  }, [isTrading, isTradeOpen, currentStake, initialStake, takeProfit, stopLoss, martingale, maxSteps, totalProfit, symbol, contractType, tradeMode, prediction, ticks]);
+  }, [isTrading, isTradeOpen, currentStake, initialStake, takeProfit, stopLoss, martingale, maxSteps, totalProfit, symbol, contractType, tradeMode, prediction, ticks, executionSpeed]);
 
   useEffect(() => {
     deriv.onBalanceChange = (bal) => setBalance(bal);
@@ -164,10 +167,10 @@ export default function App() {
         }
       }
 
-      // Fire WebSocket Request IMMEDIATELY before React State Updates
-      let buyPromise: Promise<any> | null = null;
+      // Fire WebSocket Request based on Speed Set
       if (shouldTrade) {
         stateRef.current.isTradeOpen = true; // Lock memory state instantly
+        setIsTradeOpen(true);
         
         const params: any = {
           amount: state.currentStake,
@@ -183,29 +186,29 @@ export default function App() {
           params.barrier = barrier.toString();
         }
 
-        // ws.send is synchronous inside this promise, zero event loop delay
-        buyPromise = deriv.buy(params, state.currentStake);
+        const executeTrade = () => {
+          deriv.buy(params, state.currentStake)
+            .then(async (res) => {
+              if (res.error) throw new Error(res.error.message);
+              await deriv.subscribeContract(res.buy.contract_id);
+            })
+            .catch((err: any) => {
+              setTradeError(err.message);
+              setIsTradeOpen(false);
+              stateRef.current.isTradeOpen = false;
+            });
+        };
+
+        const delay = state.executionSpeed === 'fast' ? 0 : state.executionSpeed === 'normal' ? 500 : 1500;
+        if (delay > 0) {
+          setTimeout(executeTrade, delay);
+        } else {
+          executeTrade();
+        }
       }
 
       // 2. Schedule React UI Updates
       setCurrentTick(quoteStr);
-      if (shouldTrade) {
-        setIsTradeOpen(true);
-      }
-
-      // 3. Await trade network response non-blockingly
-      if (buyPromise) {
-        try {
-          const res = await buyPromise;
-          if (res.error) throw new Error(res.error.message);
-          
-          await deriv.subscribeContract(res.buy.contract_id);
-        } catch (err: any) {
-          setTradeError(err.message);
-          setIsTradeOpen(false);
-          stateRef.current.isTradeOpen = false;
-        }
-      }
     };
 
     deriv.onOpenContract = (contract) => {
@@ -364,6 +367,8 @@ export default function App() {
       over1: { label: '', val: -1 },
       under8: { label: '', val: -1 },
       under9: { label: '', val: -1 },
+      under4: { label: '', val: -1 },
+      over5: { label: '', val: -1 },
       highDigit: { label: '', digit: -1, val: -1 },
       lowDigit: { label: '', digit: -1, val: 101 },
     };
@@ -396,6 +401,8 @@ export default function App() {
         const over1Count = digits.filter(d => d > 1).length;
         const under8Count = digits.filter(d => d < 8).length;
         const under9Count = digits.filter(d => d < 9).length;
+        const under4Count = digits.filter(d => d < 4).length;
+        const over5Count = digits.filter(d => d > 5).length;
 
         const evenPct = (evenCount / total) * 100;
         const oddPct = (oddCount / total) * 100;
@@ -405,6 +412,8 @@ export default function App() {
         const over1Pct = (over1Count / total) * 100;
         const under8Pct = (under8Count / total) * 100;
         const under9Pct = (under9Count / total) * 100;
+        const under4Pct = (under4Count / total) * 100;
+        const over5Pct = (over5Count / total) * 100;
 
         if (evenPct > bests.even.val) bests.even = { label: item.label, val: evenPct };
         if (oddPct > bests.odd.val) bests.odd = { label: item.label, val: oddPct };
@@ -414,6 +423,8 @@ export default function App() {
         if (over1Pct > bests.over1.val) bests.over1 = { label: item.label, val: over1Pct };
         if (under8Pct > bests.under8.val) bests.under8 = { label: item.label, val: under8Pct };
         if (under9Pct > bests.under9.val) bests.under9 = { label: item.label, val: under9Pct };
+        if (under4Pct > bests.under4.val) bests.under4 = { label: item.label, val: under4Pct };
+        if (over5Pct > bests.over5.val) bests.over5 = { label: item.label, val: over5Pct };
 
         const digitCounts = new Array(10).fill(0);
         digits.forEach(d => digitCounts[d]++);
@@ -426,7 +437,7 @@ export default function App() {
       } catch (e) {
         console.error('Analysis error for', item.value, e);
       }
-      setAnalyzeProgress({ current: i + 1, total: INDICES.length });
+      setAnalyzeProgress({ current: i + 1, total: validIndices.length });
     }
 
     setAnalysisResults([
@@ -436,6 +447,8 @@ export default function App() {
       { label: 'Most Falling (<= 4)', result: bests.fall.label, percent: `${bests.fall.val.toFixed(2)}%` },
       { label: 'Most Over 0', result: bests.over0.label, percent: `${bests.over0.val.toFixed(2)}%` },
       { label: 'Most Over 1', result: bests.over1.label, percent: `${bests.over1.val.toFixed(2)}%` },
+      { label: 'Most Over 5', result: bests.over5.label, percent: `${bests.over5.val.toFixed(2)}%` },
+      { label: 'Most Under 4', result: bests.under4.label, percent: `${bests.under4.val.toFixed(2)}%` },
       { label: 'Most Under 8', result: bests.under8.label, percent: `${bests.under8.val.toFixed(2)}%` },
       { label: 'Most Under 9', result: bests.under9.label, percent: `${bests.under9.val.toFixed(2)}%` },
       { label: 'Highest Occurring Digit', result: `${bests.highDigit.label} (Digit ${bests.highDigit.digit})`, percent: `${bests.highDigit.val.toFixed(2)}%` },
@@ -617,6 +630,20 @@ export default function App() {
                       disabled={isTrading}
                       className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none disabled:opacity-50 transition-colors"
                     />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Execution Speed</label>
+                    <select
+                      value={executionSpeed}
+                      onChange={(e) => setExecutionSpeed(e.target.value as 'fast' | 'normal' | 'slow')}
+                      disabled={isTrading}
+                      className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none disabled:opacity-50 transition-colors"
+                    >
+                      <option value="fast">Fast (Ultra Fast Speed)</option>
+                      <option value="normal">Normal (Default)</option>
+                      <option value="slow">Slow</option>
+                    </select>
                   </div>
 
                   <div>
