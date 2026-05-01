@@ -7,13 +7,25 @@ export class DerivAPI {
   public onBalanceChange?: (balance: any) => void;
   public onOpenContract?: (contract: any) => void;
   public onTick?: (tick: any) => void;
+  public onDisconnect?: () => void;
+
+  private pingInterval: any;
 
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(`wss://ws.binaryws.com/websockets/v3?app_id=${this.appId}`);
       
-      this.ws.onopen = () => resolve();
+      this.ws.onopen = () => {
+        this.pingInterval = setInterval(() => {
+          this.send({ ping: 1 }).catch(() => {});
+        }, 30000); // 30 seconds ping
+        resolve();
+      };
       this.ws.onerror = (err) => reject(new Error('WebSocket connection failed'));
+      this.ws.onclose = () => {
+        if (this.pingInterval) clearInterval(this.pingInterval);
+        if (this.onDisconnect) this.onDisconnect();
+      };
 
       this.ws.onmessage = (msg) => {
         const data = JSON.parse(msg.data);

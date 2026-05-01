@@ -73,7 +73,8 @@ export default function App() {
     tradeMode: 'BOTH',
     prediction: 4,
     ticks: 1,
-    executionSpeed: 'normal' as 'fast' | 'normal' | 'slow'
+    executionSpeed: 'normal' as 'fast' | 'normal' | 'slow',
+    lastEvenOddTradeType: 'DIGITODD' // Defaults to odd so first is even
   });
 
   useEffect(() => {
@@ -121,7 +122,16 @@ export default function App() {
       if (state.isTrading && !state.isTradeOpen) {
         if (state.contractType === 'EVEN_ODD') {
           const history = digitHistoryRef.current;
-          if (history.length >= 2) {
+          if (state.tradeMode === 'EVERY_TICK_EVEN') {
+            tradeType = 'DIGITEVEN';
+            shouldTrade = true;
+          } else if (state.tradeMode === 'EVERY_TICK_ODD') {
+            tradeType = 'DIGITODD';
+            shouldTrade = true;
+          } else if (state.tradeMode === 'EVERY_TICK_ALTERNATE') {
+            tradeType = state.lastEvenOddTradeType === 'DIGITEVEN' ? 'DIGITODD' : 'DIGITEVEN';
+            shouldTrade = true;
+          } else if (history.length >= 2) {
             const isPrevEven = history[0] % 2 === 0;
             const isCurrEven = history[1] % 2 === 0;
 
@@ -138,7 +148,7 @@ export default function App() {
                 tradeType = 'DIGITEVEN';
                 shouldTrade = true;
               }
-            } else {
+            } else if (state.tradeMode === 'TYPE2') {
               if (isPrevEven && isCurrEven) {
                 tradeType = 'DIGITODD';
                 shouldTrade = true;
@@ -170,6 +180,9 @@ export default function App() {
       // Fire WebSocket Request based on Speed Set
       if (shouldTrade) {
         stateRef.current.isTradeOpen = true; // Lock memory state instantly
+        if (state.contractType === 'EVEN_ODD') {
+          stateRef.current.lastEvenOddTradeType = tradeType;
+        }
         setIsTradeOpen(true);
         
         const params: any = {
@@ -216,6 +229,7 @@ export default function App() {
       
       // Wait for contract settlement
       if (contract.is_sold) {
+        deriv.forgetAll('proposal_open_contract').catch(() => {});
         const state = stateRef.current;
         const profit = contract.profit;
         const newTotalProfit = state.totalProfit + profit;
@@ -264,6 +278,15 @@ export default function App() {
         setIsTradeOpen(false);
         stateRef.current.isTradeOpen = false;
       }
+    };
+
+    deriv.onDisconnect = () => {
+      setConnected(false);
+      setIsTrading(false);
+      setIsTradeOpen(false);
+      stateRef.current.isTrading = false;
+      stateRef.current.isTradeOpen = false;
+      setAlertMsg({ type: 'error', text: 'Connection lost. Please reconnect to continue.' });
     };
 
     return () => {
@@ -593,6 +616,9 @@ export default function App() {
                         <>
                           <option value="TYPE1">Even Only (OO &rarr; E)</option>
                           <option value="TYPE2">Odd Only (EE &rarr; O)</option>
+                          <option value="EVERY_TICK_EVEN">Every Tick (Even)</option>
+                          <option value="EVERY_TICK_ODD">Every Tick (Odd)</option>
+                          <option value="EVERY_TICK_ALTERNATE">Every Tick (Alternating)</option>
                         </>
                       )}
                       {contractType === 'OVER_UNDER' && (
