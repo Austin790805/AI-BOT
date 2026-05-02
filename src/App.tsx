@@ -31,6 +31,7 @@ export default function App() {
   
   const [isTrading, setIsTrading] = useState(false);
   const [isTradeOpen, setIsTradeOpen] = useState(false);
+  const [botStatusMsg, setBotStatusMsg] = useState<string>('Waiting for Tick');
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [currentTick, setCurrentTick] = useState<string | null>(null);
   
@@ -46,6 +47,8 @@ export default function App() {
   const [prediction, setPrediction] = useState<string>('4');
   const [ticks, setTicks] = useState<string>('1');
   const [executionSpeed, setExecutionSpeed] = useState<'fast' | 'normal' | 'slow'>('normal');
+  const [useTrendFilter, setUseTrendFilter] = useState<boolean>(false);
+  const [pauseAfterLoss, setPauseAfterLoss] = useState<string>('0');
   
   const [totalProfit, setTotalProfit] = useState<number>(0);
   const [tradeHistory, setTradeHistory] = useState<any[]>([]);
@@ -74,7 +77,10 @@ export default function App() {
     prediction: 4,
     ticks: 1,
     executionSpeed: 'normal' as 'fast' | 'normal' | 'slow',
-    lastEvenOddTradeType: 'DIGITODD' // Defaults to odd so first is even
+    lastEvenOddTradeType: 'DIGITODD', // Defaults to odd so first is even
+    useTrendFilter: false,
+    pauseAfterLoss: 0,
+    pauseTicksRemaining: 0
   });
 
   useEffect(() => {
@@ -94,9 +100,13 @@ export default function App() {
       tradeMode,
       prediction: parseInt(prediction) || 4,
       ticks: parseInt(ticks) || 1,
-      executionSpeed
+      executionSpeed,
+      lastEvenOddTradeType: stateRef.current.lastEvenOddTradeType,
+      useTrendFilter,
+      pauseAfterLoss: parseInt(pauseAfterLoss) || 0,
+      pauseTicksRemaining: stateRef.current.pauseTicksRemaining
     };
-  }, [isTrading, isTradeOpen, currentStake, initialStake, takeProfit, stopLoss, martingale, maxSteps, totalProfit, symbol, contractType, tradeMode, prediction, ticks, executionSpeed]);
+  }, [isTrading, isTradeOpen, currentStake, initialStake, takeProfit, stopLoss, martingale, maxSteps, totalProfit, symbol, contractType, tradeMode, prediction, ticks, executionSpeed, useTrendFilter, pauseAfterLoss]);
 
   useEffect(() => {
     deriv.onBalanceChange = (bal) => setBalance(bal);
@@ -109,11 +119,19 @@ export default function App() {
 
       // Update in-memory history instantly
       digitHistoryRef.current.push(lastDigit);
-      if (digitHistoryRef.current.length > 2) {
+      if (digitHistoryRef.current.length > 50) {
         digitHistoryRef.current.shift();
       }
 
       const state = stateRef.current;
+      
+      if (state.pauseTicksRemaining > 0) {
+        stateRef.current.pauseTicksRemaining--;
+        setBotStatusMsg(`Cooling down... (${stateRef.current.pauseTicksRemaining} ticks)`);
+        setCurrentTick(quoteStr);
+        return; // Skip evaluation while paused
+      }
+
       let shouldTrade = false;
       let tradeType = '';
       let barrier: number | undefined = undefined;
@@ -132,8 +150,8 @@ export default function App() {
             tradeType = state.lastEvenOddTradeType === 'DIGITEVEN' ? 'DIGITODD' : 'DIGITEVEN';
             shouldTrade = true;
           } else if (history.length >= 2) {
-            const isPrevEven = history[0] % 2 === 0;
-            const isCurrEven = history[1] % 2 === 0;
+            const isPrevEven = history[history.length - 2] % 2 === 0;
+            const isCurrEven = history[history.length - 1] % 2 === 0;
 
             if (state.tradeMode === 'BOTH') {
               if (isPrevEven && isCurrEven) {
@@ -177,8 +195,33 @@ export default function App() {
         }
       }
 
+      // Live Account Edge Optimizer: Trend Filter
+      if (shouldTrade && state.useTrendFilter) {
+        const hist = digitHistoryRef.current;
+        if (hist.length >= 25) {
+          let count = 0;
+          if (tradeType === 'DIGITEVEN') count = hist.filter(d => d % 2 === 0).length;
+          else if (tradeType === 'DIGITODD') count = hist.filter(d => d % 2 !== 0).length;
+          else if (tradeType === 'DIGITOVER') count = hist.filter(d => d > (barrier || 4)).length;
+          else if (tradeType === 'DIGITUNDER') count = hist.filter(d => d < (barrier || 4)).length;
+          else if (tradeType === 'CALL') count = hist.filter(d => d > 4).length;
+          else if (tradeType === 'PUT') count = hist.filter(d => d < 5).length;
+          
+          // Require at least 52% edge over last 25 ticks (13/25)
+          if (count < 13) {
+            shouldTrade = false;
+            setBotStatusMsg(`Waiting for Trend... (${count}/13 needed for ${tradeType.replace('DIGIT', '')})`);
+          }
+        } else {
+          // Wait to collect enough data
+          shouldTrade = false;
+          setBotStatusMsg(`Analyzing Trend... (${hist.length}/25 ticks)`);
+        }
+      }
+
       // Fire WebSocket Request based on Speed Set
       if (shouldTrade) {
+        setBotStatusMsg(`Trade Open`);
         stateRef.current.isTradeOpen = true; // Lock memory state instantly
         if (state.contractType === 'EVEN_ODD') {
           stateRef.current.lastEvenOddTradeType = tradeType;
@@ -259,8 +302,12 @@ export default function App() {
             setCurrentStake(state.initialStake);
             stateRef.current.currentStake = state.initialStake;
             stateRef.current.consecutiveLosses = 0;
+            stateRef.current.pauseTicksRemaining = 0;
           } else {
             stateRef.current.consecutiveLosses += 1;
+            if (state.pauseAfterLoss > 0) {
+              stateRef.current.pauseTicksRemaining = state.pauseAfterLoss;
+            }
             if (stateRef.current.consecutiveLosses >= state.maxSteps) {
               setCurrentStake(state.initialStake);
               stateRef.current.currentStake = state.initialStake;
@@ -272,6 +319,14 @@ export default function App() {
               stateRef.current.currentStake = nextStake;
             }
           }
+        }
+
+        if (stateRef.current.pauseTicksRemaining === 0 && stateRef.current.isTrading) {
+          setBotStatusMsg('Waiting for Tick');
+        } else if (stateRef.current.pauseTicksRemaining > 0 && stateRef.current.isTrading) {
+          setBotStatusMsg(`Cooling down... (${stateRef.current.pauseTicksRemaining} ticks)`);
+        } else {
+          setBotStatusMsg('Stopped');
         }
 
         // Unlock to allow next tick trade
@@ -345,6 +400,7 @@ export default function App() {
   const handleStopTrading = async (reason?: string) => {
     setIsTrading(false);
     stateRef.current.isTrading = false;
+    setBotStatusMsg('Stopped');
     if (reason) {
       setAlertMsg({ type: 'info', text: reason });
     }
@@ -366,6 +422,7 @@ export default function App() {
 
     setCurrentStake(numStake);
     setIsTrading(true);
+    setBotStatusMsg('Waiting for Tick');
     stateRef.current.isTrading = true;
     stateRef.current.currentStake = numStake;
   };
@@ -718,6 +775,40 @@ export default function App() {
                   </div>
                 </div>
               </div>
+
+              <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 transition-colors duration-200">
+                <h3 className="text-lg font-semibold mb-1">Advanced Edge Settings</h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">Optimize execution for live accounts</p>
+                
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="trendFilter"
+                      checked={useTrendFilter}
+                      onChange={(e) => setUseTrendFilter(e.target.checked)}
+                      disabled={isTrading}
+                      className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                    />
+                    <label htmlFor="trendFilter" className="text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer">
+                      Trend Filter Override
+                    </label>
+                  </div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 ml-6 -mt-2">Only executes trades when the past 25 ticks strictly favor the predicted outcome.</p>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Pause After Loss (Ticks)</label>
+                    <input
+                      type="number" min="0" step="1"
+                      value={pauseAfterLoss}
+                      onChange={(e) => setPauseAfterLoss(e.target.value)}
+                      disabled={isTrading}
+                      className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none disabled:opacity-50 transition-colors"
+                    />
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Pauses trading to avoid fake breakouts after a loss.</p>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div className="lg:col-span-2 space-y-6">
@@ -731,7 +822,7 @@ export default function App() {
                       {isTrading ? (
                         <span className="flex items-center gap-1 text-sm font-medium text-blue-600 dark:text-blue-400">
                           <Activity className="w-4 h-4 animate-pulse" /> Running
-                          {isTradeOpen ? ' (Trade Open)' : ' (Waiting for Tick)'}
+                          <span className="ml-1 opacity-80">({botStatusMsg})</span>
                         </span>
                       ) : (
                         <span className="text-sm font-medium text-gray-500 dark:text-gray-400">Stopped</span>
