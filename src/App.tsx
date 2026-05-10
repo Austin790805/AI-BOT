@@ -66,6 +66,7 @@ export default function App() {
   const [useTrendFilter, setUseTrendFilter] = useState<boolean>(false);
   const [hftMode, setHftMode] = useState<boolean>(false);
   const [pauseAfterLoss, setPauseAfterLoss] = useState<string>("0");
+  const [lossesBeforeCooldown, setLossesBeforeCooldown] = useState<string>("1");
 
   const [totalProfit, setTotalProfit] = useState<number>(0);
   const [tradeHistory, setTradeHistory] = useState<any[]>([]);
@@ -105,6 +106,7 @@ export default function App() {
     useTrendFilter: false,
     hftMode: false,
     pauseAfterLoss: 0,
+    lossesBeforeCooldown: 1,
     pauseTicksRemaining: 0,
   });
 
@@ -127,6 +129,7 @@ export default function App() {
       useTrendFilter,
       hftMode,
       pauseAfterLoss: parseInt(pauseAfterLoss) || 0,
+      lossesBeforeCooldown: parseInt(lossesBeforeCooldown) || 1,
     });
   }, [
     isTrading,
@@ -146,6 +149,7 @@ export default function App() {
     useTrendFilter,
     hftMode,
     pauseAfterLoss,
+    lossesBeforeCooldown,
   ]);
 
   useEffect(() => {
@@ -191,7 +195,7 @@ export default function App() {
       // Evaluate logic instantly if unlocked
       if (state.isTrading && !state.isTradeOpen && history.length > 0) {
         const lastDigitEval = history[history.length - 1];
-        
+
         if (state.contractType === "EVEN_ODD") {
           if (state.tradeMode === "EVERY_TICK_EVEN") {
             tradeType = "DIGITEVEN";
@@ -323,16 +327,19 @@ export default function App() {
 
         executeTrade();
       } else if (state.isTrading && !state.isTradeOpen) {
-         // Provide visual feedback if not trading yet AND trend filter hasn't already overridden it
-         if (!state.useTrendFilter || (state.useTrendFilter && tradeType === "")) {
-             if (state.contractType === "EVEN_ODD" && history.length >= 2) {
-                 const prevSeq = history[history.length - 2] % 2 === 0 ? "E" : "O";
-                 const currSeq = history[history.length - 1] % 2 === 0 ? "E" : "O";
-                 setBotStatusMsg(`Analyzing sequence [${prevSeq}, ${currSeq}]...`);
-             } else if (history.length < 2) {
-                 setBotStatusMsg(`Collecting ticks (${history.length}/2)...`);
-             }
-         }
+        // Provide visual feedback if not trading yet AND trend filter hasn't already overridden it
+        if (
+          !state.useTrendFilter ||
+          (state.useTrendFilter && tradeType === "")
+        ) {
+          if (state.contractType === "EVEN_ODD" && history.length >= 2) {
+            const prevSeq = history[history.length - 2] % 2 === 0 ? "E" : "O";
+            const currSeq = history[history.length - 1] % 2 === 0 ? "E" : "O";
+            setBotStatusMsg(`Analyzing sequence [${prevSeq}, ${currSeq}]...`);
+          } else if (history.length < 2) {
+            setBotStatusMsg(`Collecting ticks (${history.length}/2)...`);
+          }
+        }
       }
     };
 
@@ -385,9 +392,17 @@ export default function App() {
             stateRef.current.pauseTicksRemaining = 0;
           } else {
             stateRef.current.consecutiveLosses += 1;
-            if (state.pauseAfterLoss > 0) {
+
+            // Check if cooldown should trigger based on consecutive losses
+            if (
+              state.pauseAfterLoss > 0 &&
+              stateRef.current.consecutiveLosses %
+                state.lossesBeforeCooldown ===
+                0
+            ) {
               stateRef.current.pauseTicksRemaining = state.pauseAfterLoss;
             }
+
             if (stateRef.current.consecutiveLosses >= state.maxSteps) {
               setCurrentStake(state.initialStake);
               stateRef.current.currentStake = state.initialStake;
@@ -423,7 +438,7 @@ export default function App() {
         // Unlock to allow next tick trade
         setIsTradeOpen(false);
         stateRef.current.isTradeOpen = false;
-        
+
         // HFT Trigger
         if (stateRef.current.isTrading && stateRef.current.hftMode) {
           evaluateAndTrade();
@@ -524,7 +539,7 @@ export default function App() {
     setIsTrading(true);
     setIsTradeOpen(false);
     setBotStatusMsg("Waiting for Tick");
-    
+
     // Reset core states on start
     stateRef.current.isTrading = true;
     stateRef.current.isTradeOpen = false;
@@ -1043,26 +1058,46 @@ export default function App() {
                     </label>
                   </div>
                   <p className="text-xs text-gray-500 dark:text-gray-400 ml-6 -mt-2">
-                    Bypass all delays and execute the next trade instantly after the previous one closes.
+                    Bypass all delays and execute the next trade instantly after
+                    the previous one closes.
                   </p>
 
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                      Pause After Loss (Ticks)
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={pauseAfterLoss}
-                      onChange={(e) => setPauseAfterLoss(e.target.value)}
-                      disabled={isTrading}
-                      className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none disabled:opacity-50 transition-colors"
-                    />
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                      Pauses trading to avoid fake breakouts after a loss.
-                    </p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Losses Triggering Cooldown
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={lossesBeforeCooldown}
+                        onChange={(e) =>
+                          setLossesBeforeCooldown(e.target.value)
+                        }
+                        disabled={isTrading}
+                        className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none disabled:opacity-50 transition-colors"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Cooldown Duration (Ticks)
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={pauseAfterLoss}
+                        onChange={(e) => setPauseAfterLoss(e.target.value)}
+                        disabled={isTrading}
+                        className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none disabled:opacity-50 transition-colors"
+                      />
+                    </div>
                   </div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Pauses trading after the specified number of consecutive
+                    losses to avoid fake breakouts.
+                  </p>
                 </div>
               </div>
             </div>
