@@ -1237,6 +1237,27 @@ export default function App() {
                     <RefreshCw className="w-4 h-4" /> Reset
                   </button>
                 </div>
+                
+                {tradeHistory.length > 0 && (
+                  <div className="grid grid-cols-4 gap-2 mb-4 p-4 bg-gray-50 dark:bg-gray-900/50 rounded-xl text-center shadow-inner border border-gray-100 dark:border-gray-700/50">
+                    <div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400">Total Runs</div>
+                      <div className="font-semibold text-gray-900 dark:text-gray-100">{tradeHistory.length}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400">Wins</div>
+                      <div className="font-semibold text-green-600 dark:text-green-500">{tradeHistory.filter(h => h.status === 'WON').length}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400">Losses</div>
+                      <div className="font-semibold text-red-600 dark:text-red-500">{tradeHistory.filter(h => h.status === 'LOST').length}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400">Win Rate</div>
+                      <div className="font-semibold text-blue-600 dark:text-blue-500">{((tradeHistory.filter(h => h.status === 'WON').length / tradeHistory.length) * 100).toFixed(2)}%</div>
+                    </div>
+                  </div>
+                )}
 
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-sm">
